@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Blockfall</title>
+<style>
+  body { margin:0; background:#14161c; color:#e6e6e6; font-family:system-ui,sans-serif;
+         display:flex; justify-content:center; align-items:center; height:100vh; }
+  .wrap { display:flex; gap:20px; }
+  canvas { background:#0b0c10; border:2px solid #333; }
+  .side { width:160px; }
+  .side h1 { font-size:22px; margin:0 0 12px; }
+  .stat { margin:8px 0; font-size:15px; }
+  .keys { font-size:12px; color:#999; line-height:1.6; margin-top:16px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <canvas id="board" width="300" height="600"></canvas>
+  <div class="side">
+    <h1>Blockfall</h1>
+    <div class="stat">Next:</div>
+    <canvas id="next" width="120" height="120"></canvas>
+    <div class="stat">Score: <span id="score">0</span></div>
+    <div class="stat">Lines: <span id="lines">0</span></div>
+    <div class="stat">Level: <span id="level">1</span></div>
+    <div class="keys">
+      ← → move<br>↓ soft drop<br>↑ / X rotate<br>Z rotate back<br>Space hard drop<br>P pause · R restart
+    </div>
+  </div>
+</div>
+<script>
+const COLS = 10, ROWS = 20, S = 30;
+const ctx = document.getElementById('board').getContext('2d');
+const nctx = document.getElementById('next').getContext('2d');
+const COLORS = [null,'#4dd0e1','#ffd54f','#ba68c8','#81c784','#e57373','#64b5f6','#ffb74d'];
+const SHAPES = [null,
+  [[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]],
+  [[2,2],[2,2]],
+  [[0,3,0],[3,3,3],[0,0,0]],
+  [[0,4,4],[4,4,0],[0,0,0]],
+  [[5,5,0],[0,5,5],[0,0,0]],
+  [[6,0,0],[6,6,6],[0,0,0]],
+  [[0,0,7],[7,7,7],[0,0,0]],
+];
+
+let board, piece, next, score, lines, level, dropMs, acc, last, over, paused, bag = [];
+
+function randType() {
+  if (!bag.length) { bag = [1,2,3,4,5,6,7]; for (let i=6;i>0;i--){const j=Math.random()*(i+1)|0;[bag[i],bag[j]]=[bag[j],bag[i]];} }
+  return bag.pop();
+}
+function makePiece(t) {
+  const m = SHAPES[t].map(r => r.slice());
+  return { m, x: (COLS - m[0].length) / 2 | 0, y: t === 1 ? -1 : 0 };
+}
+function collide(m, x, y) {
+  for (let r=0;r<m.length;r++) for (let c=0;c<m[r].length;c++) {
+    if (!m[r][c]) continue;
+    const nx = x+c, ny = y+r;
+    if (nx<0 || nx>=COLS || ny>=ROWS) return true;
+    if (ny>=0 && board[ny][nx]) return true;
+  }
+  return false;
+}
+function rotate(m, dir) {
+  const n = m.length, out = m.map(r => r.slice());
+  for (let r=0;r<n;r++) for (let c=0;c<n;c++)
+    out[r][c] = dir > 0 ? m[n-1-c][r] : m[c][n-1-r];
+  return out;
+}
+function tryRotate(dir) {
+  const m = rotate(piece.m, dir);
+  for (const k of [0,-1,1,-2,2]) if (!collide(m, piece.x+k, piece.y)) { piece.m = m; piece.x += k; return; }
+}
+function merge() {
+  piece.m.forEach((row,r) => row.forEach((v,c) => { if (v && piece.y+r >= 0) board[piece.y+r][piece.x+c] = v; }));
+  if (piece.m.some((row,r) => row.some(v => v) && piece.y + r < 0)) { over = true; return; }
+  let cleared = 0;
+  for (let r=ROWS-1;r>=0;r--) if (board[r].every(v=>v)) { board.splice(r,1); board.unshift(Array(COLS).fill(0)); cleared++; r++; }
+  if (cleared) {
+    score += [0,100,300,500,800][cleared] * level;
+    lines += cleared;
+    level = 1 + (lines / 10 | 0);
+    dropMs = Math.max(80, 800 - (level-1)*70);
+  }
+  piece = makePiece(next); next = randType();
+  if (collide(piece.m, piece.x, piece.y)) over = true;
+  updateHUD();
+}
+function drop() {
+  if (!collide(piece.m, piece.x, piece.y+1)) piece.y++; else merge();
+  acc = 0;
+}
+function hardDrop() {
+  let d = 0; while (!collide(piece.m, piece.x, piece.y+1)) { piece.y++; d++; }
+  score += d*2; merge(); acc = 0;
+}
+function updateHUD() {
+  document.getElementById('score').textContent = score;
+  document.getElementById('lines').textContent = lines;
+  document.getElementById('level').textContent = level;
+}
+function cell(c, x, y, color, alpha=1) {
+  c.globalAlpha = alpha; c.fillStyle = color;
+  c.fillRect(x*S+1, y*S+1, S-2, S-2);
+  c.globalAlpha = alpha*0.25; c.fillStyle = '#fff';
+  c.fillRect(x*S+1, y*S+1, S-2, 4);
+  c.globalAlpha = 1;
+}
+function draw() {
+  ctx.clearRect(0,0,COLS*S,ROWS*S);
+  ctx.strokeStyle = '#1a1c22';
+  for (let x=0;x<=COLS;x++){ctx.beginPath();ctx.moveTo(x*S,0);ctx.lineTo(x*S,ROWS*S);ctx.stroke();}
+  for (let y=0;y<=ROWS;y++){ctx.beginPath();ctx.moveTo(0,y*S);ctx.lineTo(COLS*S,y*S);ctx.stroke();}
+  board.forEach((row,y) => row.forEach((v,x) => v && cell(ctx,x,y,COLORS[v])));
+  let gy = piece.y; while (!collide(piece.m, piece.x, gy+1)) gy++;
+  piece.m.forEach((row,r) => row.forEach((v,c) => {
+    if (!v) return;
+    if (gy+r >= 0) cell(ctx, piece.x+c, gy+r, COLORS[v], 0.2);
+    if (piece.y+r >= 0) cell(ctx, piece.x+c, piece.y+r, COLORS[v]);
+  }));
+  nctx.clearRect(0,0,120,120);
+  const nm = SHAPES[next], off = (4 - nm.length) / 2;
+  nm.forEach((row,r) => row.forEach((v,c) => v && cell(nctx, c+off, r+off, COLORS[v])));
+  if (over || paused) {
+    ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(0,0,COLS*S,ROWS*S);
+    ctx.fillStyle = '#fff'; ctx.textAlign = 'center';
+    ctx.font = 'bold 28px system-ui'; ctx.fillText(over ? 'GAME OVER' : 'PAUSED', COLS*S/2, ROWS*S/2);
+    ctx.font = '14px system-ui'; ctx.fillText(over ? 'Press R to restart' : 'Press P to resume', COLS*S/2, ROWS*S/2+28);
+  }
+}
+function loop(t) {
+  const dt = t - last; last = t;
+  if (!over && !paused) { acc += dt; if (acc > dropMs) drop(); }
+  draw();
+  requestAnimationFrame(loop);
+}
+function reset() {
+  board = Array.from({length:ROWS}, () => Array(COLS).fill(0));
+  bag = []; piece = makePiece(randType()); next = randType();
+  score = 0; lines = 0; level = 1; dropMs = 800; acc = 0; over = false; paused = false;
+  updateHUD();
+}
+document.addEventListener('keydown', e => {
+  if (e.code === 'KeyR') return reset();
+  if (e.code === 'KeyP' && !over) { paused = !paused; return; }
+  if (over || paused) return;
+  switch (e.code) {
+    case 'ArrowLeft': if (!collide(piece.m, piece.x-1, piece.y)) piece.x--; break;
+    case 'ArrowRight': if (!collide(piece.m, piece.x+1, piece.y)) piece.x++; break;
+    case 'ArrowDown': drop(); score++; updateHUD(); break;
+    case 'ArrowUp': case 'KeyX': tryRotate(1); break;
+    case 'KeyZ': tryRotate(-1); break;
+    case 'Space': hardDrop(); break;
+    default: return;
+  }
+  e.preventDefault();
+});
+reset();
+last = performance.now();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
